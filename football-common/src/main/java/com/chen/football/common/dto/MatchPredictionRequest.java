@@ -7,9 +7,15 @@ public record MatchPredictionRequest(
     String homeTeamName,
     String awayTeamName,
     String leagueName,
-    Integer leagueId
+    Integer leagueId,
+    Long userId,
+    Double homeWinProb,
+    Double drawProb,
+    Double awayWinProb,
+    String resultLabel,
+    String explanation
 ) {
     public MatchPredictionRequest(Long fixtureId, Long homeTeamId, Long awayTeamId) {
-        this(fixtureId, homeTeamId, awayTeamId, null, null, null, null);
+        this(fixtureId, homeTeamId, awayTeamId, null, null, null, null, null, null, null, null, null, null);
     }
 }

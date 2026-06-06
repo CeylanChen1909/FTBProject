@@ -34,7 +34,8 @@ public class JwtUtil {
                 .subject(String.valueOf(userId))
                 .claims(Map.of("username", username, "role", role == null ? "USER" : role))
                 .issuedAt(Date.from(now))
-                .expiration(Date.from(now.plusSeconds(60 * 60 * 24)))
+                // 收藏/浏览类功能更适合更长的登录态，避免用户频繁被踢下线
+                .expiration(Date.from(now.plusSeconds(60L * 60 * 24 * 7)))
                 .signWith(Keys.hmacShaKeyFor(jwtSecretBytes))
                 .compact();
     }
