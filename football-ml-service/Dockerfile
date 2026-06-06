@@ -5,12 +5,12 @@ WORKDIR /app
 
 # Install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
+    && pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 
 # Copy app
 COPY app.py .
 COPY train.py .
-COPY .env .
 
 # Create models directory (will be mounted or populated by train)
 RUN mkdir -p /app/models
