@@ -46,14 +46,15 @@ REM 启动后端服务
 echo [5/5] 启动后端微服务...
 echo 启动顺序：Gateway -> User -> Match -> News -> Team -> Prediction -> DataSync
 echo 注意：每个服务需要独立终端，以下仅作并发启动参考
-start "Gateway" cmd /k "cd /d %~dp0 && java -jar football-gateway\target\football-gateway-1.0.0-SNAPSHOT.jar"
+set COMMON_ARGS=--spring.cloud.nacos.discovery.server-addr=127.0.0.1:8848 --spring.cloud.nacos.discovery.ip=127.0.0.1
+start "Gateway" cmd /k "cd /d %~dp0 && java -jar football-gateway\target\football-gateway-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
 timeout /t 5 /nobreak >nul
-start "UserService" cmd /k "cd /d %~dp0 && java -jar football-user-service\target\football-user-service-1.0.0-SNAPSHOT.jar"
-start "MatchService" cmd /k "cd /d %~dp0 && java -jar football-match-service\target\football-match-service-1.0.0-SNAPSHOT.jar"
-start "NewsService" cmd /k "cd /d %~dp0 && java -jar football-news-service\target\football-news-service-1.0.0-SNAPSHOT.jar"
-start "TeamService" cmd /k "cd /d %~dp0 && java -jar football-team-service\target\football-team-service-1.0.0-SNAPSHOT.jar"
-start "PredictionService" cmd /k "cd /d %~dp0 && java -jar football-prediction-service\target\football-prediction-service-1.0.0-SNAPSHOT.jar"
-start "DataSyncService" cmd /k "cd /d %~dp0 && java -jar football-data-sync-service\target\football-data-sync-service-1.0.0-SNAPSHOT.jar"
+start "UserService" cmd /k "cd /d %~dp0 && java -jar football-user-service\target\football-user-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
+start "MatchService" cmd /k "cd /d %~dp0 && java -jar football-match-service\target\football-match-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
+start "NewsService" cmd /k "cd /d %~dp0 && java -jar football-news-service\target\football-news-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
+start "TeamService" cmd /k "cd /d %~dp0 && java -jar football-team-service\target\football-team-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
+start "PredictionService" cmd /k "cd /d %~dp0 && java -jar football-prediction-service\target\football-prediction-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
+start "DataSyncService" cmd /k "cd /d %~dp0 && java -jar football-data-sync-service\target\football-data-sync-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%"
 
 echo.
 echo ================================================

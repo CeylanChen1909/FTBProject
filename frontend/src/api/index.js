@@ -101,6 +101,7 @@ export const crawlerApi = {
   getUpcomingMatches() { return api.get('/crawler/matches/upcoming') },
   getMatchesByDate(date) { return api.get('/crawler/matches/date/' + date) },
   getMatchesPage(page = 1, size = 20, date) { return api.get('/crawler/matches/db/page', { params: { page, size, date } }) },
+  getMatchesWindow(page = 1, size = 200) { return api.get('/crawler/matches/db/page', { params: { page, size } }) },
   getHotMatches(limit = 10) { return api.get('/crawler/matches/hot', { params: { limit } }) },
   getMatchDetail(externalMatchId) { return api.get('/crawler/matches/detail/' + externalMatchId) },
   searchMatches(keyword) { return api.get('/crawler/matches/search', { params: { keyword } }) },

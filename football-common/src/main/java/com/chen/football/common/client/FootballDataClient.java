@@ -114,8 +114,7 @@ public class FootballDataClient {
     private Map<String, Object> request(String url) {
         try {
             HttpHeaders headers = new HttpHeaders();
-            headers.set("X-Auth-Token", "713cc15a646f47a8b66f3db70d3d0623");
-            headers.setBearerAuth(props.getToken());
+            headers.set("X-Auth-Token", props.getToken());
             headers.setAccept(List.of(MediaType.APPLICATION_JSON));
             HttpEntity<Void> entity = new HttpEntity<>(headers);
             log.debug("football-data 请求发送: {}", url);

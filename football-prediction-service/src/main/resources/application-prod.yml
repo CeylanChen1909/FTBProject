@@ -24,8 +24,8 @@ mybatis-plus:
     map-underscore-to-camel-case: true
 python:
   inference:
-    enabled: ${PYTHON_INFERENCE_ENABLED:false}
-    url: ${PYTHON_INFERENCE_URL:http://127.0.0.1:5001}
+    enabled: ${PYTHON_INFERENCE_ENABLED:true}
+    url: ${PYTHON_INFERENCE_URL:http://football-ml-service:5001}
 
 management:
   endpoints:

@@ -44,6 +44,8 @@ set MYSQL_USER=root
 set MYSQL_PASSWORD=root
 set REDIS_HOST=127.0.0.1
 set REDIS_PORT=6379
+set NACOS_ADDR=127.0.0.1:8848
+set COMMON_ARGS=--spring.cloud.nacos.discovery.server-addr=127.0.0.1:8848 --spring.cloud.nacos.discovery.ip=127.0.0.1
 
 echo.
 echo [1/4] 编译项目...
@@ -65,32 +67,32 @@ echo [3/4] 启动微服务...
 
 REM 启动网关
 echo 启动 Gateway (端口 8080)...
-start "Football Gateway" java -jar football-gateway\target\football-gateway-1.0.0-SNAPSHOT.jar
+start "Football Gateway" java -jar football-gateway\target\football-gateway-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 REM 启动用户服务
 echo 启动 User Service (端口 9001)...
-start "Football User" java -jar football-user-service\target\football-user-service-1.0.0-SNAPSHOT.jar
+start "Football User" java -jar football-user-service\target\football-user-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 REM 启动比赛服务
 echo 启动 Match Service (端口 9002)...
-start "Football Match" java -jar football-match-service\target\football-match-service-1.0.0-SNAPSHOT.jar
+start "Football Match" java -jar football-match-service\target\football-match-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 REM 启动资讯服务
 echo 启动 News Service (端口 9003)...
-start "Football News" java -jar football-news-service\target\football-news-service-1.0.0-SNAPSHOT.jar
+start "Football News" java -jar football-news-service\target\football-news-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 REM 启动球队服务
 echo 启动 Team Service (端口 9004)...
-start "Football Team" java -jar football-team-service\target\football-team-service-1.0.0-SNAPSHOT.jar
+start "Football Team" java -jar football-team-service\target\football-team-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 REM 启动预测服务
 echo 启动 Prediction Service (端口 9005)...
-start "Football Prediction" java -jar football-prediction-service\target\football-prediction-service-1.0.0-SNAPSHOT.jar
+start "Football Prediction" java -jar football-prediction-service\target\football-prediction-service-1.0.0-SNAPSHOT.jar %COMMON_ARGS%
 timeout /t 3 /nobreak > nul
 
 echo.

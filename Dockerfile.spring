@@ -13,13 +13,14 @@ COPY football-data-sync-service ./football-data-sync-service
 COPY football-crawler-service ./football-crawler-service
 
 ARG MODULE
-RUN mvn -pl ${MODULE} -am clean package -DskipTests
+RUN mvn -pl ${MODULE} -am clean package spring-boot:repackage -DskipTests \
+    && mkdir -p /workspace/build-output \
+    && cp /workspace/${MODULE}/target/${MODULE}-*.jar /workspace/build-output/app.jar
 
 FROM eclipse-temurin:17-jre-jammy
 
 WORKDIR /app
-ARG MODULE
-COPY --from=builder /workspace/${MODULE}/target/*.jar /app/app.jar
+COPY --from=builder /workspace/build-output/app.jar /app/app.jar
 
 ENV JAVA_OPTS="-Xms256m -Xmx512m"
 ENV SPRING_PROFILES_ACTIVE=prod

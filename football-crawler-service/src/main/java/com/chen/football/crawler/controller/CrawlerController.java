@@ -13,9 +13,11 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.function.Supplier;
 
@@ -96,7 +98,20 @@ public class CrawlerController {
             int safePage = Math.max(1, page);
             int safeSize = Math.max(1, Math.min(size, 100));
             int offset = (safePage - 1) * safeSize;
+            LocalDate today = LocalDate.now();
+            LocalDate windowStart = today.minusDays(7);
+            LocalDate windowEnd = today.plusDays(7);
+            LocalDate queryStart = windowStart;
+            LocalDate queryEnd = windowEnd;
+            if (date != null) {
+                LocalDate requestedDate = date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+                queryStart = requestedDate.isBefore(windowStart) ? windowStart : requestedDate;
+                queryEnd = requestedDate.isAfter(windowEnd) ? windowEnd : requestedDate;
+            }
             LambdaQueryWrapper<CrawlerMatch> query = new LambdaQueryWrapper<CrawlerMatch>()
+                    .ge(CrawlerMatch::getMatchTime, queryStart.atStartOfDay())
+                    .lt(CrawlerMatch::getMatchTime, queryEnd.plusDays(1).atStartOfDay())
+                    .orderByAsc(CrawlerMatch::getMatchTime)
                     .orderByAsc(CrawlerMatch::getFixtureId);
             if (keyword != null && !keyword.isBlank()) {
                 query.and(q -> q.like(CrawlerMatch::getLeagueName, keyword)
@@ -106,16 +121,14 @@ public class CrawlerController {
             if (status != null && !status.isBlank()) {
                 query.eq(CrawlerMatch::getStatus, status);
             }
-            if (date != null) {
-                query.and(q -> q.ge(CrawlerMatch::getMatchTime, date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toLocalDate().atStartOfDay())
-                        .lt(CrawlerMatch::getMatchTime, date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDateTime().toLocalDate().plusDays(1).atStartOfDay()));
-            }
             List<CrawlerMatch> all = crawlerMatchMapper.selectList(query);
             List<CrawlerMatch> pageItems = all.stream().skip(offset).limit(safeSize).toList();
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("page", safePage);
             data.put("size", safeSize);
             data.put("total", all.size());
+            data.put("windowStart", windowStart.toString());
+            data.put("windowEnd", windowEnd.toString());
             data.put("response", formatMatches(pageItems));
             data.put("results", pageItems.size());
             return Map.of("success", true, "message", "获取成功", "data", data);
@@ -123,6 +136,7 @@ public class CrawlerController {
             return buildFailureResponse(e);
         }
     }
+
 
     /**
      * 获取实时/进行中比赛
@@ -271,24 +285,31 @@ public class CrawlerController {
     public Map<String, Object> getHotMatches(@RequestParam(name = "limit", defaultValue = "10") int limit) {
         try {
             int safeLimit = Math.max(1, Math.min(limit, 20));
-            List<CrawlerMatch> liveMatches = crawlerMatchMapper.findLiveMatches();
-            List<CrawlerMatch> upcomingMatches = crawlerMatchMapper.findUpcomingMatches();
-            List<CrawlerMatch> todayMatches = matchCrawlerService.getTodayMatches();
+            LocalDate today = LocalDate.now();
+            LocalDateTime start = today.minusDays(7).atStartOfDay();
+            LocalDateTime end = today.plusDays(7).plusDays(1).atStartOfDay();
+            List<CrawlerMatch> candidates = crawlerMatchMapper.selectList(new LambdaQueryWrapper<CrawlerMatch>()
+                    .ge(CrawlerMatch::getMatchTime, start)
+                    .lt(CrawlerMatch::getMatchTime, end));
 
-            LinkedHashMap<String, CrawlerMatch> merged = new LinkedHashMap<>();
-            for (CrawlerMatch match : liveMatches) merged.put(match.getExternalMatchId(), match);
-            for (CrawlerMatch match : todayMatches) merged.putIfAbsent(match.getExternalMatchId(), match);
-            for (CrawlerMatch match : upcomingMatches) merged.putIfAbsent(match.getExternalMatchId(), match);
+            long liveCount = candidates.stream().filter(this::isLiveMatch).count();
+            long todayCount = candidates.stream().filter(m -> isSameDate(m.getMatchTime(), today)).count();
+            long upcomingCount = candidates.stream().filter(m -> "NS".equalsIgnoreCase(String.valueOf(m.getStatus()))).count();
 
-            List<CrawlerMatch> hotMatches = merged.values().stream().limit(safeLimit).toList();
+            List<CrawlerMatch> hotMatches = candidates.stream()
+                    .sorted((a, b) -> Integer.compare(calculateHotScore(b, today), calculateHotScore(a, today)))
+                    .limit(safeLimit)
+                    .toList();
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("limit", safeLimit);
+            data.put("windowStart", today.minusDays(7).toString());
+            data.put("windowEnd", today.plusDays(7).toString());
             data.put("response", formatMatches(hotMatches));
             data.put("results", hotMatches.size());
             data.put("summary", Map.of(
-                    "live", liveMatches.size(),
-                    "today", todayMatches.size(),
-                    "upcoming", upcomingMatches.size()
+                    "live", liveCount,
+                    "today", todayCount,
+                    "upcoming", upcomingCount
             ));
             return Map.of("success", true, "message", "获取成功", "data", data);
         } catch (Exception e) {
@@ -631,7 +652,7 @@ public class CrawlerController {
 
             // fixture
             Map<String, Object> fixture = new LinkedHashMap<>();
-            fixture.put("id", match.getId());
+            fixture.put("id", match.getFixtureId() != null ? match.getFixtureId() : match.getId());
             Date matchDate = match.getMatchTime() == null
                     ? null
                     : Date.from(match.getMatchTime().atZone(ZoneId.systemDefault()).toInstant());
@@ -677,6 +698,9 @@ public class CrawlerController {
             goals.put("away", match.getAwayScore() != null ? match.getAwayScore() : null);
             item.put("goals", goals);
 
+            item.put("matchDate", match.getMatchTime() == null ? null : match.getMatchTime().toLocalDate().toString());
+            item.put("hotScore", calculateHotScore(match, LocalDate.now()));
+
             // source
             item.put("source", match.getSource());
 
@@ -685,6 +709,51 @@ public class CrawlerController {
 
         return result;
     }
+
+    private int calculateHotScore(CrawlerMatch match, LocalDate today) {
+        int score = 0;
+        if (match == null) return score;
+        String status = String.valueOf(match.getStatus()).toUpperCase(Locale.ROOT);
+        if (isLiveMatch(match)) score += 1000;
+        else if ("NS".equals(status)) score += 500;
+        else if ("FT".equals(status) || "FINISHED".equals(status)) score += 120;
+        if (match.getMatchTime() != null) {
+            LocalDate matchDate = match.getMatchTime().toLocalDate();
+            long distance = Math.abs(ChronoUnit.DAYS.between(today, matchDate));
+            score += Math.max(0, 220 - (int) distance * 30);
+            long minutesToKickoff = Math.abs(ChronoUnit.MINUTES.between(LocalDateTime.now(), match.getMatchTime()));
+            if (minutesToKickoff <= 180) score += 160;
+            else if (minutesToKickoff <= 720) score += 90;
+        }
+        score += leagueHotWeight(match.getLeagueName(), match.getLeagueId());
+        if (match.getHomeScore() != null || match.getAwayScore() != null) score += 40;
+        if (match.getHomeTeamLogo() != null && !match.getHomeTeamLogo().isBlank()) score += 10;
+        if (match.getAwayTeamLogo() != null && !match.getAwayTeamLogo().isBlank()) score += 10;
+        return score;
+    }
+
+    private boolean isLiveMatch(CrawlerMatch match) {
+        String status = match == null ? "" : String.valueOf(match.getStatus()).toUpperCase(Locale.ROOT);
+        return "LIVE".equals(status) || "IN_PLAY".equals(status) || "1H".equals(status) || "2H".equals(status) || "HT".equals(status);
+    }
+
+    private boolean isSameDate(LocalDateTime value, LocalDate date) {
+        return value != null && value.toLocalDate().equals(date);
+    }
+
+    private int leagueHotWeight(String leagueName, String leagueId) {
+        String key = ((leagueName == null ? "" : leagueName) + " " + (leagueId == null ? "" : leagueId)).toLowerCase(Locale.ROOT);
+        if (key.contains("premier") || key.contains("英超") || key.contains("pl")) return 220;
+        if (key.contains("champions") || key.contains("欧冠") || key.contains("cl")) return 210;
+        if (key.contains("la liga") || key.contains("西甲") || key.contains("pd")) return 190;
+        if (key.contains("serie a") || key.contains("意甲") || key.contains("sa")) return 180;
+        if (key.contains("bundesliga") || key.contains("德甲") || key.contains("bl1")) return 170;
+        if (key.contains("ligue 1") || key.contains("法甲") || key.contains("fl1")) return 150;
+        if (key.contains("world cup") || key.contains("世界杯") || key.contains("wc")) return 230;
+        if (key.contains("european championship") || key.contains("欧洲杯") || key.contains("ec")) return 220;
+        return 60;
+    }
+
 
     /**
      * 格式化积分榜数据

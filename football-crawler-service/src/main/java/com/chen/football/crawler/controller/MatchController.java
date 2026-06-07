@@ -7,6 +7,7 @@ import com.chen.football.crawler.mapper.CrawlerMatchMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,6 +70,7 @@ public class MatchController {
 
     @PostMapping
     public ApiResponse<Map<String, Object>> save(@RequestBody CrawlerMatch match) {
+        normalizeEditableMatch(match, LocalDateTime.now());
         crawlerMatchMapper.insert(match);
         return ApiResponse.ok(Map.of("ok", true, "id", match.getId()));
     }
@@ -76,7 +78,12 @@ public class MatchController {
     @PutMapping("/{id}/edit")
     public ApiResponse<Map<String, Object>> edit(@PathVariable(name = "id") Long id,
                                                  @RequestBody CrawlerMatch match) {
+        CrawlerMatch existing = crawlerMatchMapper.selectById(id);
         match.setId(id);
+        if (existing != null) {
+            match.setCreatedAt(existing.getCreatedAt());
+        }
+        normalizeEditableMatch(match, LocalDateTime.now());
         crawlerMatchMapper.updateById(match);
         return ApiResponse.ok(Map.of("ok", true, "id", id));
     }
@@ -85,5 +92,27 @@ public class MatchController {
     public ApiResponse<Map<String, Object>> delete(@PathVariable(name = "id") Long id) {
         crawlerMatchMapper.deleteById(id);
         return ApiResponse.ok(Map.of("ok", true));
+    }
+
+    private void normalizeEditableMatch(CrawlerMatch match, LocalDateTime now) {
+        if (match.getFixtureId() == null) {
+            match.setFixtureId(System.currentTimeMillis());
+        }
+        if (match.getExternalMatchId() == null || match.getExternalMatchId().isBlank()) {
+            match.setExternalMatchId(String.valueOf(match.getFixtureId()));
+        }
+        if (match.getSource() == null || match.getSource().isBlank()) {
+            match.setSource("admin");
+        }
+        if (match.getStatus() == null || match.getStatus().isBlank()) {
+            match.setStatus("NS");
+        }
+        if (match.getMatchTime() == null) {
+            match.setMatchTime(now);
+        }
+        if (match.getCreatedAt() == null) {
+            match.setCreatedAt(now);
+        }
+        match.setUpdatedAt(now);
     }
 }

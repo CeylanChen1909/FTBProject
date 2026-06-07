@@ -43,6 +43,8 @@ public class MatchCrawlerService {
             "法甲", "/competition/co34/france-ligue-1/results-and-standings/",
             "中超", "/competition/co355/china-super-league/results-and-standings/"
     );
+    private static final String FOOTBALL_DATA_FREE_TIER_COMPETITIONS = String.join(",",
+            "WC", "CL", "BL1", "DED", "BSA", "PD", "FL1", "ELC", "PPL", "EC", "SA", "PL");
 
     public MatchCrawlerService(CrawlerHttpClient httpClient, WorldFootballParser worldFootballParser, Zq123Parser parser,
                                 CrawlerMatchMapper matchMapper, RedisTemplate<Object, Object> redisTemplate,
@@ -188,7 +190,7 @@ public class MatchCrawlerService {
         List<CrawlerMatch> result = new ArrayList<>();
         try {
             Map<String, Object> data = footballDataClient
-                    .getMatches(dateStr, dateStr, null, "SCHEDULED,LIVE,IN_PLAY,PAUSED,FINISHED")
+                    .getMatches(dateStr, dateStr, FOOTBALL_DATA_FREE_TIER_COMPETITIONS, null)
                     .block();
             if (isFootballDataResultEmpty(data)) {
                 return result;
@@ -258,8 +260,9 @@ public class MatchCrawlerService {
             match.setAwayTeamId(String.valueOf(away.getOrDefault("id", "")));
             match.setAwayTeamName(awayName);
             match.setAwayTeamLogo(String.valueOf(away.getOrDefault("logo", away.getOrDefault("crest", ""))));
-            match.setStatus(String.valueOf(status == null ? "NS" : status.getOrDefault("short", "NS")));
+            match.setStatus(normalizeFootballDataStatus(String.valueOf(status == null ? "NS" : status.getOrDefault("short", "NS"))));
             match.setExternalMatchId(!fixtureId.isBlank() ? fixtureId : (homeName + "_" + awayName + "_" + dateStr));
+            match.setFixtureId(toLong(fixtureId));
             match.setMatchTime(parseFootballDataMatchTime(matchTime).toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
 
             if (goals != null) {
@@ -383,9 +386,15 @@ public class MatchCrawlerService {
             match.setStatus(String.valueOf(status == null ? "NS" : status.getOrDefault("short", "NS")));
 
             Integer fixtureId = toInt(fixture == null ? null : fixture.get("id"));
+            String rawDate = fixture == null ? null : String.valueOf(fixture.getOrDefault("date", ""));
             String rawTime = fixture == null ? null : String.valueOf(fixture.getOrDefault("time", ""));
-            match.setExternalMatchId((fixtureId != null ? String.valueOf(fixtureId) : (homeName + "_" + awayName + "_" + dateStr)));
-            match.setMatchTime(parseJuheMatchTime(dateStr, rawTime));
+            LocalDateTime matchTime = parseJuheMatchTime(rawDate, rawTime);
+            if (matchTime == null) {
+                return null;
+            }
+            String matchDateKey = matchTime.toLocalDate().toString();
+            match.setExternalMatchId((fixtureId != null ? String.valueOf(fixtureId) : (homeName + "_" + awayName + "_" + matchDateKey)));
+            match.setMatchTime(matchTime);
 
             if (goals != null) {
                 match.setHomeScore(toInt(goals.get("home")));
@@ -403,11 +412,16 @@ public class MatchCrawlerService {
 
     private LocalDateTime parseJuheMatchTime(String dateStr, String timeStr) {
         try {
-            String safeTime = (timeStr == null || timeStr.isBlank()) ? "00:00" : timeStr;
-            Date parsed = new SimpleDateFormat("yyyy-MM-dd HH:mm").parse(dateStr + " " + safeTime);
+            if (dateStr == null || dateStr.isBlank()) return null;
+            String safeDate = dateStr.trim();
+            if (safeDate.length() > 10) safeDate = safeDate.substring(0, 10);
+            if (!safeDate.matches("\\d{4}-\\d{2}-\\d{2}")) return null;
+            String safeTime = (timeStr == null || timeStr.isBlank()) ? "00:00" : timeStr.trim();
+            if (safeTime.length() >= 5) safeTime = safeTime.substring(0, 5);
+            Date parsed = new SimpleDateFormat("yyyy-MM-dd HH:mm").parse(safeDate + " " + safeTime);
             return parsed.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
         } catch (Exception e) {
-            return LocalDateTime.now();
+            return null;
         }
     }
 
@@ -420,6 +434,29 @@ public class MatchCrawlerService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) return null;
+        try {
+            String s = String.valueOf(value).trim();
+            if (s.isEmpty() || "null".equalsIgnoreCase(s)) return null;
+            return Long.parseLong(s);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String normalizeFootballDataStatus(String status) {
+        if (status == null || status.isBlank()) return "NS";
+        return switch (status) {
+            case "SCHEDULED", "TIMED" -> "NS";
+            case "LIVE", "IN_PLAY", "PAUSED" -> "LIVE";
+            case "FINISHED" -> "FT";
+            case "POSTPONED" -> "POSTP";
+            case "CANCELLED", "CANCELED", "SUSPENDED" -> "CANCEL";
+            default -> status;
+        };
     }
 
     private void normalizeMatch(CrawlerMatch match, String leagueName, String dateStr) {

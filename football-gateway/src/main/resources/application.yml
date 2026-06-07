@@ -13,7 +13,7 @@ spring:
     nacos:
       discovery:
         enabled: true
-        server-addr: ${NACOS_ADDR:127.0.0.1:8080}
+        server-addr: ${NACOS_ADDR:127.0.0.1:8848}
       config:
         enabled: false
     sentinel:

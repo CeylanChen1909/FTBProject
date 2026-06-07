@@ -31,10 +31,14 @@ from sklearn.metrics import (
 import xgboost as xgb
 
 # ==================== 配置 ====================
+TRAIN_DATA_SOURCE = os.environ.get("TRAIN_DATA_SOURCE", "api-football").strip().lower()
 API_KEY = os.environ.get("API_FOOTBALL_API_KEY", "").strip()
 BASE_URL = "https://v3.football.api-sports.io"
-
 HEADERS = {"x-apisports-key": API_KEY}
+
+FOOTBALL_DATA_API_KEY = os.environ.get("FOOTBALL_DATA_API_KEY", "").strip()
+FOOTBALL_DATA_BASE_URL = "https://api.football-data.org/v4"
+FOOTBALL_DATA_HEADERS = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
 
 DEFAULT_LEAGUES = {
     39: "Premier League",
@@ -42,6 +46,21 @@ DEFAULT_LEAGUES = {
     135: "Serie A",
     78: "Bundesliga",
     61: "Ligue 1",
+}
+
+FOOTBALL_DATA_COMPETITIONS = {
+    "WC": "FIFA World Cup",
+    "CL": "UEFA Champions League",
+    "BL1": "Bundesliga",
+    "DED": "Eredivisie",
+    "BSA": "Campeonato Brasileiro Série A",
+    "PD": "Primera Division",
+    "FL1": "Ligue 1",
+    "ELC": "Championship",
+    "PPL": "Primeira Liga",
+    "EC": "European Championship",
+    "SA": "Serie A",
+    "PL": "Premier League",
 }
 
 
@@ -57,7 +76,20 @@ def parse_int_list(value: str | None, default: list[int]) -> list[int]:
     return result or default
 
 
+def parse_str_list(value: str | None, default: list[str]) -> list[str]:
+    """解析逗号分隔的字符串环境变量。"""
+    if not value:
+        return default
+    result = []
+    for item in value.split(","):
+        item = item.strip().upper()
+        if item:
+            result.append(item)
+    return result or default
+
+
 TRAIN_LEAGUE_IDS = parse_int_list(os.environ.get("TRAIN_LEAGUES"), [39])
+FOOTBALL_DATA_CODES = parse_str_list(os.environ.get("FOOTBALL_DATA_COMPETITIONS"), ["PL"])
 TRAIN_SEASONS = parse_int_list(os.environ.get("TRAIN_SEASONS"), [2023])
 MAX_MATCHES_PER_SEASON = int(os.environ.get("MAX_MATCHES_PER_SEASON", 30))
 MIN_REAL_RECORDS = int(os.environ.get("MIN_REAL_RECORDS", 30))
@@ -251,6 +283,155 @@ def extract_fixture_features(fixture: dict, home_stats: dict, away_stats: dict) 
     except Exception as e:
         print(f"[WARN] extract_features failed: {e}")
         return None
+
+
+def fetch_football_data_matches(competition_code: str, season: int) -> list:
+    """从 football-data.org 拉取指定赛事、赛季的比赛列表。"""
+    params = {"season": season}
+    url = f"{FOOTBALL_DATA_BASE_URL}/competitions/{competition_code}/matches"
+    try:
+        resp = requests.get(url, headers=FOOTBALL_DATA_HEADERS, params=params, timeout=20)
+        data = resp.json()
+        if resp.status_code >= 400:
+            print(f"[API ERROR] football-data {competition_code} {season}: {data}")
+            return []
+        return data.get("matches", [])
+    except Exception as e:
+        print(f"[WARN] football-data fetch failed for {competition_code} {season}: {e}")
+        return []
+
+
+def build_football_data_features(matches: list, max_matches: int | None = None) -> list[dict]:
+    """基于 football-data.org 比赛列表滚动构建训练特征。"""
+    completed = []
+    for match in matches:
+        score = match.get("score", {})
+        full_time = score.get("fullTime", {})
+        home_goals = full_time.get("home")
+        away_goals = full_time.get("away")
+        if match.get("status") != "FINISHED" or home_goals is None or away_goals is None:
+            continue
+        completed.append(match)
+
+    completed.sort(key=lambda item: item.get("utcDate", ""))
+    if max_matches and max_matches > 0:
+        completed = completed[:max_matches]
+
+    team_stats: dict[int, list[dict]] = {}
+    last_played: dict[int, datetime] = {}
+    elo: dict[int, float] = {}
+    h2h_stats: dict[tuple[int, int], list[int]] = {}
+    records = []
+
+    def get_elo(team_id: int) -> float:
+        if team_id not in elo:
+            elo[team_id] = 1500.0
+        return elo[team_id]
+
+    def update_elo(home_id: int, away_id: int, label: int, k: int = 28) -> None:
+        home_elo = get_elo(home_id)
+        away_elo = get_elo(away_id)
+        expected_home = 1 / (1 + 10 ** ((away_elo - home_elo) / 400))
+        if label == 0:
+            actual_home = 1.0
+        elif label == 1:
+            actual_home = 0.5
+        else:
+            actual_home = 0.0
+        elo[home_id] = home_elo + k * (actual_home - expected_home)
+        elo[away_id] = away_elo + k * ((1 - actual_home) - (1 - expected_home))
+
+    def calc_team(team_id: int, match_dt: datetime) -> dict:
+        recent = team_stats.get(team_id, [])[-10:]
+        if not recent:
+            return {
+                "win_rate": 0.45,
+                "avg_goals": 1.5,
+                "avg_loss": 1.2,
+                "avg_cards": 1.5,
+                "days_rest": 7,
+            }
+        n = len(recent)
+        wins = sum(1 for item in recent if item["result"] == 0)
+        draws = sum(1 for item in recent if item["result"] == 1)
+        goals = sum(item["goals"] for item in recent)
+        conceded = sum(item["conceded"] for item in recent)
+        previous_dt = last_played.get(team_id)
+        days_rest = 7 if previous_dt is None else max(1, min(30, (match_dt - previous_dt).days))
+        return {
+            "win_rate": (wins + draws * 0.5) / n,
+            "avg_goals": goals / n,
+            "avg_loss": conceded / n,
+            "avg_cards": 1.5,
+            "days_rest": days_rest,
+        }
+
+    for match in completed:
+        home = match.get("homeTeam", {})
+        away = match.get("awayTeam", {})
+        home_id = home.get("id")
+        away_id = away.get("id")
+        if home_id is None or away_id is None:
+            continue
+
+        score = match.get("score", {}).get("fullTime", {})
+        home_goals = int(score["home"])
+        away_goals = int(score["away"])
+        if home_goals > away_goals:
+            label = 0
+        elif home_goals == away_goals:
+            label = 1
+        else:
+            label = 2
+
+        match_dt = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00")).replace(tzinfo=None)
+        home_feat = calc_team(home_id, match_dt)
+        away_feat = calc_team(away_id, match_dt)
+        home_elo = get_elo(home_id) + 35
+        away_elo = get_elo(away_id)
+        pair_key = tuple(sorted((home_id, away_id)))
+        h2h = h2h_stats.get(pair_key, [])[-5:]
+        h2h_home_wins = sum(1 for item in h2h if item == home_id)
+        h2h_draws = sum(1 for item in h2h if item == 0)
+        h2h_away_wins = sum(1 for item in h2h if item == away_id)
+
+        records.append({
+            "home_elo": round(home_elo, 2),
+            "away_elo": round(away_elo, 2),
+            "elo_diff": round(home_elo - away_elo, 2),
+            "home_win_rate": round(home_feat["win_rate"], 4),
+            "away_win_rate": round(away_feat["win_rate"], 4),
+            "home_avg_goals": round(home_feat["avg_goals"], 4),
+            "away_avg_goals": round(away_feat["avg_goals"], 4),
+            "home_avg_loss": round(home_feat["avg_loss"], 4),
+            "away_avg_loss": round(away_feat["avg_loss"], 4),
+            "home_avg_cards": round(home_feat["avg_cards"], 4),
+            "away_avg_cards": round(away_feat["avg_cards"], 4),
+            "home_days_rest": home_feat["days_rest"],
+            "away_days_rest": away_feat["days_rest"],
+            "h2h_home_wins": h2h_home_wins,
+            "h2h_draws": h2h_draws,
+            "h2h_away_wins": h2h_away_wins,
+            "home_win_rate_diff": round(home_feat["win_rate"] - away_feat["win_rate"], 4),
+            "elo_sum": round(home_elo + away_elo, 2),
+            "home_goal_diff": round(home_feat["avg_goals"] - away_feat["avg_goals"], 4),
+            "avg_total_goals": round((home_feat["avg_goals"] + away_feat["avg_goals"]) / 2, 4),
+            "label": label,
+        })
+
+        team_stats.setdefault(home_id, []).append({"result": label, "goals": home_goals, "conceded": away_goals})
+        team_stats.setdefault(away_id, []).append({"result": 2 - label if label != 1 else 1, "goals": away_goals, "conceded": home_goals})
+        last_played[home_id] = match_dt
+        last_played[away_id] = match_dt
+        if label == 0:
+            h2h_stats.setdefault(pair_key, []).append(home_id)
+        elif label == 2:
+            h2h_stats.setdefault(pair_key, []).append(away_id)
+        else:
+            h2h_stats.setdefault(pair_key, []).append(0)
+        update_elo(home_id, away_id, label)
+
+    return records
 
 
 def generate_synthetic_data(n_samples: int = 2000) -> pd.DataFrame:
@@ -451,19 +632,7 @@ def main():
     print("Football Match Prediction - XGBoost Training")
     print("=" * 50)
 
-    if not API_KEY:
-        raise RuntimeError("Missing API_FOOTBALL_API_KEY. Please set it before training.")
-
-    leagues = [
-        {
-            "id": league_id,
-            "name": DEFAULT_LEAGUES.get(league_id, f"League {league_id}"),
-            "seasons": TRAIN_SEASONS,
-        }
-        for league_id in TRAIN_LEAGUE_IDS
-    ]
-
-    print(f"[Config] Leagues: {', '.join(str(item['id']) for item in leagues)}")
+    print(f"[Config] Data source: {TRAIN_DATA_SOURCE}")
     print(f"[Config] Seasons: {', '.join(str(season) for season in TRAIN_SEASONS)}")
     print(f"[Config] Max matches per season: {MAX_MATCHES_PER_SEASON}")
     print(f"[Config] Min real records: {MIN_REAL_RECORDS}")
@@ -471,31 +640,61 @@ def main():
 
     all_records = []
 
-    for league in leagues:
-        for season in league["seasons"]:
-            print(f"\n[Fetch] {league['name']} {season}...")
-            fixtures = fetch_fixtures(league["id"], season, total_pages=10)
-            print(f"[Fetch] Got {len(fixtures)} fixtures")
+    if TRAIN_DATA_SOURCE == "football-data":
+        if not FOOTBALL_DATA_API_KEY:
+            raise RuntimeError("Missing FOOTBALL_DATA_API_KEY. Please set it before training.")
+        print(f"[Config] football-data competitions: {', '.join(FOOTBALL_DATA_CODES)}")
+        for code in FOOTBALL_DATA_CODES:
+            name = FOOTBALL_DATA_COMPETITIONS.get(code, code)
+            for season in TRAIN_SEASONS:
+                print(f"\n[Fetch] football-data {name} {season}...")
+                matches = fetch_football_data_matches(code, season)
+                print(f"[Fetch] Got {len(matches)} matches")
+                records = build_football_data_features(matches, MAX_MATCHES_PER_SEASON)
+                all_records.extend(records)
+                print(f"[Fetch] Processed {len(records)} matches from {name} {season}")
+    elif TRAIN_DATA_SOURCE == "api-football":
+        if not API_KEY:
+            raise RuntimeError("Missing API_FOOTBALL_API_KEY. Please set it before training.")
 
-            processed = 0
-            for fixture in fixtures:
-                if processed >= MAX_MATCHES_PER_SEASON:
-                    break
-                teams = fixture.get("teams", {})
-                home_id = teams.get("home", {}).get("id")
-                away_id = teams.get("away", {}).get("id")
-                if not home_id or not away_id:
-                    continue
+        leagues = [
+            {
+                "id": league_id,
+                "name": DEFAULT_LEAGUES.get(league_id, f"League {league_id}"),
+                "seasons": TRAIN_SEASONS,
+            }
+            for league_id in TRAIN_LEAGUE_IDS
+        ]
 
-                home_stats = fetch_team_stats(home_id, league["id"], season)
-                away_stats = fetch_team_stats(away_id, league["id"], season)
+        print(f"[Config] API-Football leagues: {', '.join(str(item['id']) for item in leagues)}")
 
-                feat = extract_fixture_features(fixture, home_stats, away_stats)
-                if feat:
-                    all_records.append(feat)
-                    processed += 1
+        for league in leagues:
+            for season in league["seasons"]:
+                print(f"\n[Fetch] {league['name']} {season}...")
+                fixtures = fetch_fixtures(league["id"], season, total_pages=10)
+                print(f"[Fetch] Got {len(fixtures)} fixtures")
 
-            print(f"[Fetch] Processed {processed} matches from {league['name']} {season}")
+                processed = 0
+                for fixture in fixtures:
+                    if processed >= MAX_MATCHES_PER_SEASON:
+                        break
+                    teams = fixture.get("teams", {})
+                    home_id = teams.get("home", {}).get("id")
+                    away_id = teams.get("away", {}).get("id")
+                    if not home_id or not away_id:
+                        continue
+
+                    home_stats = fetch_team_stats(home_id, league["id"], season)
+                    away_stats = fetch_team_stats(away_id, league["id"], season)
+
+                    feat = extract_fixture_features(fixture, home_stats, away_stats)
+                    if feat:
+                        all_records.append(feat)
+                        processed += 1
+
+                print(f"[Fetch] Processed {processed} matches from {league['name']} {season}")
+    else:
+        raise RuntimeError("TRAIN_DATA_SOURCE must be either 'api-football' or 'football-data'.")
 
     if len(all_records) < MIN_REAL_RECORDS:
         if ALLOW_SYNTHETIC_DATA:

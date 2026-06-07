@@ -72,9 +72,10 @@
             <span class="match-count">
               共 {{ rawMatches.length }} 场比赛
             </span>
+            <span class="date-window">{{ dateWindowText }}</span>
           </div>
           <div class="filter-actions">
-            <el-button size="small" text @click="loadHotMatches">热门比赛</el-button>
+            <el-button size="small" text @click="loadHotMatches">刷新热门推荐</el-button>
           </div>
         </div>
 
@@ -121,20 +122,31 @@
           </div>
           <div v-if="filteredMatches.length === 0" class="empty-state">
             <el-icon :size="64" color="#ddd"><Tickets /></el-icon>
-            <p>该日期暂无比赛</p>
-            <p class="empty-hint">试试切换日期或联赛</p>
+            <p>前后 7 天暂无比赛</p>
+            <p class="empty-hint">请先在后台同步数据源，或稍后刷新重试</p>
           </div>
-          <div v-else class="matches-grid">
-            <MatchCard
-              v-for="m in filteredMatches"
-              :key="m.fixture?.id"
-              :match="m"
-              :favorited="isFavoritedMatch(m.fixture?.id)"
-              @predict="goPredict"
-              @teamClick="goTeamDetail"
-              @h2h="showH2H"
-              @favorite-match="toggleMatchFavorite"
-            />
+          <div v-else class="date-group-list">
+            <div v-for="group in groupedMatches" :key="group.date" class="date-group reveal">
+              <div class="date-group-header">
+                <div>
+                  <strong>{{ group.label }}</strong>
+                  <span>{{ group.weekday }}</span>
+                </div>
+                <el-tag type="info" effect="plain">{{ group.items.length }} 场</el-tag>
+              </div>
+              <div class="matches-grid">
+                <MatchCard
+                  v-for="m in group.items"
+                  :key="m.fixture?.id"
+                  :match="m"
+                  :favorited="isFavoritedMatch(m.fixture?.id)"
+                  @predict="goPredict"
+                  @teamClick="goTeamDetail"
+                  @h2h="showH2H"
+                  @favorite-match="toggleMatchFavorite"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </el-main>
@@ -172,7 +184,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import { crawlerApi, newsApi, favoriteApi } from '../api'
@@ -187,7 +199,6 @@ const errorMsg = ref('')
 const rawMatches = ref([])
 const showHotPanel = ref(true)
 const hotMatches = ref([])
-const selectedDate = ref(new Date().toISOString().split('T')[0])
 const matchFavorites = ref([])
 
 // 历史交锋
@@ -195,7 +206,41 @@ const h2hVisible = ref(false)
 const h2hLoading = ref(false)
 const h2hData = ref(null)
 
+const getMatchDate = (match) => match?.matchDate || String(match?.fixture?.date || '').slice(0, 10)
+const formatDateLabel = (date) => {
+  if (!date) return '日期未知'
+  const today = new Date().toISOString().slice(0, 10)
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+  if (date === today) return `${date} · 今天`
+  if (date === tomorrow) return `${date} · 明天`
+  if (date === yesterday) return `${date} · 昨天`
+  return date
+}
+const weekdayLabel = (date) => {
+  if (!date) return '-'
+  return new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(new Date(`${date}T00:00:00`))
+}
 const filteredMatches = computed(() => rawMatches.value || [])
+const groupedMatches = computed(() => {
+  const map = new Map()
+  ;(filteredMatches.value || []).forEach(match => {
+    const date = getMatchDate(match) || 'unknown'
+    if (!map.has(date)) map.set(date, [])
+    map.get(date).push(match)
+  })
+  return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([date, items]) => ({
+    date,
+    label: formatDateLabel(date),
+    weekday: weekdayLabel(date),
+    items: items.sort((a, b) => String(a?.fixture?.date || '').localeCompare(String(b?.fixture?.date || '')))
+  }))
+})
+const dateWindowText = computed(() => {
+  const start = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+  const end = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+  return `仅显示 ${start} 至 ${end}`
+})
 
 const upcomingCount = computed(() => {
   return (rawMatches.value || []).filter(m => m?.fixture?.status?.short === 'NS').length
@@ -235,12 +280,11 @@ const loadMatches = async () => {
   errorMsg.value = ''
   
   try {
-    const date = selectedDate.value || new Date().toISOString().split('T')[0]
-    const res = await crawlerApi.getMatchesPage(1, 200, date)
+    const res = await crawlerApi.getMatchesWindow(1, 300)
     rawMatches.value = normalizeMatchList(res)
     
     if (rawMatches.value.length === 0) {
-      ElMessage.info('该日期暂无比赛数据')
+      ElMessage.info('前后 7 天暂无比赛数据')
     }
   } catch (e) {
     errorMsg.value = e.message || '加载比赛失败，请检查后端服务是否启动'
@@ -373,12 +417,7 @@ onMounted(() => {
   loadFavorites()
 })
 
-// 监听日期变化自动刷新
-watch(selectedDate, () => {
-  if (selectedDate.value) {
-    loadMatches()
-  }
-})
+// 比赛页固定展示今天前后 7 天窗口。
 </script>
 
 <style scoped>
@@ -516,6 +555,13 @@ watch(selectedDate, () => {
 .match-count {
   color: #94a3b8;
 }
+.date-window {
+  color: #2563eb;
+  background: rgba(37,99,235,.08);
+  border: 1px solid rgba(37,99,235,.12);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
 
 .loading-state,
 .error-state,
@@ -561,6 +607,11 @@ watch(selectedDate, () => {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 .reveal { animation: fadeUp .55s ease both; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+.date-group-list { display:flex; flex-direction:column; gap:22px; }
+.date-group { background: rgba(255,255,255,.68); border:1px solid rgba(226,232,240,.9); border-radius:18px; padding:16px; box-shadow:0 12px 28px rgba(15,23,42,.05); }
+.date-group-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; padding-bottom:12px; border-bottom:1px solid #e8eef5; }
+.date-group-header strong { display:block; color:#0f172a; font-size:16px; }
+.date-group-header span { display:block; margin-top:4px; color:#64748b; font-size:13px; }
 .matches-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
 
 /* 历史交锋样式 */
