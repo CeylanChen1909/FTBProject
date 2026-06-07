@@ -10,6 +10,9 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 /**
@@ -146,7 +149,6 @@ public class JuheFootballClient {
             List<Map<String, Object>> matchs = (List<Map<String, Object>>) matchsObj;
             for (Map<String, Object> match : matchs) {
                 String leagueName = (String) match.get("title");
-                String matchDate = (String) match.get("date");
                 int leagueId = getLeagueIdFromName(leagueName);
                 String normalizedLeagueName = normalizeLeagueName(leagueName);
                 
@@ -161,6 +163,10 @@ public class JuheFootballClient {
                 if (listObj instanceof List) {
                     List<Map<String, Object>> gamesRaw = (List<Map<String, Object>>) listObj;
                     for (Map<String, Object> game : gamesRaw) {
+                        String realMatchDate = extractRealMatchDate(game);
+                        if (realMatchDate == null) {
+                            continue;
+                        }
                         Map<String, Object> standardMatch = new HashMap<>();
                         
                         // 联赛信息
@@ -169,7 +175,7 @@ public class JuheFootballClient {
                         // fixture
                         Map<String, Object> fixture = new HashMap<>();
                         fixture.put("id", Math.abs(game.hashCode()));
-                        fixture.put("date", matchDate);
+                        fixture.put("date", realMatchDate);
                         fixture.put("time", game.get("time_start"));
                         
                         // 状态
@@ -234,6 +240,40 @@ public class JuheFootballClient {
     private String normalizeTeamName(String name) {
         if (name == null) return "未知球队";
         return name;
+    }
+
+    private String extractRealMatchDate(Map<String, Object> game) {
+        if (game == null || game.isEmpty()) return null;
+        String[] dateKeys = {"date", "match_date", "matchDate", "game_date", "gameDate", "start_date", "startDate"};
+        for (String key : dateKeys) {
+            String normalized = normalizeDateValue(game.get(key));
+            if (normalized != null) return normalized;
+        }
+        String[] dateTimeKeys = {"datetime", "date_time", "match_time", "matchTime", "time", "time_start", "start_time", "startTime"};
+        for (String key : dateTimeKeys) {
+            String normalized = normalizeDateValue(game.get(key));
+            if (normalized != null) return normalized;
+        }
+        return null;
+    }
+
+    private String normalizeDateValue(Object value) {
+        if (value == null) return null;
+        String raw = String.valueOf(value).trim();
+        if (raw.isEmpty() || "null".equalsIgnoreCase(raw)) return null;
+        raw = raw.replace('/', '-').replace('.', '-');
+        if (raw.length() >= 10) {
+            String candidate = raw.substring(0, 10);
+            if (candidate.matches("\\d{4}-\\d{1,2}-\\d{1,2}")) {
+                try {
+                    LocalDate date = LocalDate.parse(candidate, DateTimeFormatter.ofPattern("yyyy-M-d"));
+                    return date.toString();
+                } catch (DateTimeParseException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     /**
